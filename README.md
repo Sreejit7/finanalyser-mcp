@@ -1,6 +1,15 @@
-# Financial Data Analysis MCP Server (Python + OpenRouter/OpenAI Compatible APIs)
+# Financial Data Analysis MCP Server & Web Application
 
-A powerful Model Context Protocol (MCP) server that analyzes financial transaction data using AI-powered categorization with OpenRouter, OpenAI, or any OpenAI-compatible API provider.
+A powerful Model Context Protocol (MCP) server **with web interface** that analyzes financial transaction data using AI-powered categorization with OpenRouter, OpenAI, or any OpenAI-compatible API provider.
+
+## 🌐 Web Application
+
+This project now includes a **modern web interface** built with React + TypeScript + Tailwind CSS that provides:
+- **Drag-and-drop file upload** for CSV/JSON files
+- **Interactive charts** for spending analysis
+- **Sortable transaction table** with filtering
+- **Real-time insights** and categorization confidence scores
+- **Mobile-responsive design**
 
 ## 🚀 Features
 
@@ -119,7 +128,28 @@ Use the `list_available_models` tool to see popular options:
 
 ## 🎯 Usage
 
-### Running the Server
+### Web Application (Recommended)
+
+1. **Development mode** (hot reload):
+```bash
+# Install dependencies
+pip install -r requirements.txt
+cd frontend && bun install
+
+# Start both backend + frontend
+python run_dev.py
+```
+Then visit: http://localhost:3000
+
+2. **Production mode**:
+```bash
+# Build and run
+python build_production.py
+python -m uvicorn web_api:app --host 0.0.0.0 --port 8000
+```
+Then visit: http://localhost:8000
+
+### MCP Server (for CLI/IDE integration)
 
 ```bash
 python -m finanalyser_mcp.server
