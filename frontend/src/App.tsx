@@ -26,6 +26,7 @@ function App() {
   } | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [lastUploadedFile, setLastUploadedFile] = useState<File | null>(null);
+  const [dismissedSuggestions, setDismissedSuggestions] = useState<Set<string>>(new Set());
 
   // File validation function
   const validateFile = (file: File): string | null => {
@@ -195,21 +196,12 @@ function App() {
                   if (data.batch_number === 1) {
                     setActiveTab('overview');
                   }
+                } else if (data.suggestions) {
+                  // suggestions_generated event
+                  setSuggestions(data.suggestions);
                 } else if (data.message) {
                   // analysis_complete event
                   console.log('🎉 Analysis completed!');
-                  
-                  // Generate final suggestions
-                  const suggestions: Suggestion[] = [
-                    {
-                      id: '1',
-                      title: 'Review Transactions',
-                      description: `Analysis completed for ${allTransactions.length} transactions`,
-                      category: 'budget',
-                      impact: 'medium'
-                    }
-                  ];
-                  setSuggestions(suggestions);
                   
                 } else if (data.error) {
                   // error event
@@ -287,16 +279,10 @@ function App() {
       
       updateCategorySpendingFromTransactions(analysisData.transactions);
       
-      const suggestions: Suggestion[] = [
-        {
-          id: '1',
-          title: 'Review High Spending Categories',
-          description: `You have ${analysisData.summary.low_confidence_count} transactions that need manual review`,
-          category: 'budget',
-          impact: 'medium'
-        }
-      ];
-      setSuggestions(suggestions);
+      // Use suggestions from API if available, otherwise generate fallback
+      if (analysisData.suggestions) {
+        setSuggestions(analysisData.suggestions);
+      }
       
       setActiveTab('overview');
     } catch (err) {
@@ -404,6 +390,28 @@ function App() {
     
     setCategorySpending(categorySpendingData);
   };
+
+  // Suggestion handlers
+  const handleLearnMore = (suggestion: Suggestion) => {
+    // Navigate to relevant sections based on suggestion category
+    if (suggestion.category === 'budget') {
+      setActiveTab('transactions');
+    } else if (suggestion.category === 'spending') {
+      setActiveTab('insights');
+    } else if (suggestion.category === 'savings' || suggestion.category === 'investment') {
+      setActiveTab('insights');
+    } else {
+      // Default to insights for detailed analysis
+      setActiveTab('insights');
+    }
+  };
+
+  const handleRemindLater = (suggestion: Suggestion) => {
+    setDismissedSuggestions(prev => new Set([...prev, suggestion.id]));
+  };
+
+  // Filter out dismissed suggestions
+  const visibleSuggestions = suggestions.filter(s => !dismissedSuggestions.has(s.id));
 
   const hasData = transactions.length > 0;
 
@@ -526,7 +534,11 @@ function App() {
                     <InsightsPanel insights={insights} categorySpending={categorySpending} />
                   </div>
                   <div>
-                    <SuggestionsPanel suggestions={suggestions.slice(0, 3)} />
+                    <SuggestionsPanel 
+                      suggestions={visibleSuggestions.slice(0, 3)} 
+                      onLearnMore={handleLearnMore}
+                      onRemindLater={handleRemindLater}
+                    />
                   </div>
                 </div>
               )}
@@ -540,7 +552,11 @@ function App() {
               )}
               
               {activeTab === 'suggestions' && (
-                <SuggestionsPanel suggestions={suggestions} />
+                <SuggestionsPanel 
+                  suggestions={visibleSuggestions} 
+                  onLearnMore={handleLearnMore}
+                  onRemindLater={handleRemindLater}
+                />
               )}
             </div>
 

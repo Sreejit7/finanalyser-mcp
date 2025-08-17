@@ -722,6 +722,157 @@ Example response:
 
         return insights
 
+    async def generate_suggestions_with_llm(self, transactions: List[Transaction], insights: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Generate intelligent financial suggestions using LLM analysis."""
+        if not self.openai_client:
+            logger.warning("No LLM client available for suggestions generation")
+            return self._generate_fallback_suggestions(transactions, insights)
+        
+        # Prepare summary data for LLM analysis
+        summary = insights.get("summary", {})
+        expense_breakdown = insights.get("expense_breakdown", {})
+        income_breakdown = insights.get("income_breakdown", {})
+        top_expenses = insights.get("top_expenses", [])
+        low_confidence_count = insights.get("low_confidence_transactions", [])
+        
+        # Calculate key metrics
+        total_income = summary.get("total_income", 0)
+        total_expenses = summary.get("total_expenses", 0)
+        net_cash_flow = summary.get("net_cash_flow", 0)
+        savings_rate = (net_cash_flow / total_income * 100) if total_income > 0 else 0
+        
+        # Create analysis prompt
+        prompt = f"""
+You are a financial advisor analyzing spending patterns. Based on this financial data, provide personalized suggestions to improve financial health.
+
+FINANCIAL OVERVIEW:
+- Total Income: ₹{total_income:,.2f}
+- Total Expenses: ₹{total_expenses:,.2f}
+- Net Cash Flow: ₹{net_cash_flow:,.2f}
+- Savings Rate: {savings_rate:.1f}%
+- Total Transactions: {summary.get("total_transactions", 0)}
+- Low Confidence Categorizations: {len(low_confidence_count)}
+
+EXPENSE BREAKDOWN:
+{json.dumps(expense_breakdown, indent=2)}
+
+INCOME SOURCES:
+{json.dumps(income_breakdown, indent=2)}
+
+TOP EXPENSES:
+{json.dumps(top_expenses[:5], indent=2)}
+
+Provide 3-5 actionable financial suggestions. Format as JSON array with these fields:
+- id: unique identifier
+- title: clear, actionable title
+- description: specific advice with reasoning
+- category: type of suggestion (savings/spending/budget/investment)
+- impact: expected benefit level (high/medium/low)
+- estimatedSavings: optional monthly savings estimate as a number in INR (e.g., 2500 for ₹2,500)
+
+All monetary amounts should be in Indian Rupees (₹). Focus on practical improvements based on the actual spending patterns shown.
+"""
+
+        try:
+            logger.info("Generating LLM-based financial suggestions...")
+            response = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.openai_client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a practical financial advisor. Analyze spending data and provide actionable advice. Respond only with valid JSON."
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+                    max_tokens=1500,
+                    temperature=0.7
+                )
+            )
+            
+            suggestions_text = response.choices[0].message.content.strip()
+            
+            # Clean up response - remove any markdown formatting
+            if suggestions_text.startswith("```json"):
+                suggestions_text = suggestions_text[7:]
+            if suggestions_text.endswith("```"):
+                suggestions_text = suggestions_text[:-3]
+            suggestions_text = suggestions_text.strip()
+            
+            # Parse JSON response
+            suggestions = json.loads(suggestions_text)
+            
+            # Validate and clean suggestions
+            validated_suggestions = []
+            for suggestion in suggestions:
+                if all(key in suggestion for key in ["id", "title", "description", "category", "impact"]):
+                    # Ensure valid category and impact values
+                    if suggestion["category"] in ["savings", "spending", "budget", "investment"] and \
+                       suggestion["impact"] in ["high", "medium", "low"]:
+                        validated_suggestions.append(suggestion)
+            
+            logger.info(f"Generated {len(validated_suggestions)} valid LLM suggestions")
+            return validated_suggestions
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse LLM suggestions JSON: {e}")
+            logger.error(f"Raw response: {suggestions_text[:500]}...")
+            return self._generate_fallback_suggestions(transactions, insights)
+        except Exception as e:
+            logger.error(f"Error generating LLM suggestions: {e}")
+            return self._generate_fallback_suggestions(transactions, insights)
+
+    def _generate_fallback_suggestions(self, transactions: List[Transaction], insights: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Generate basic fallback suggestions when LLM is unavailable."""
+        suggestions = []
+        
+        summary = insights.get("summary", {})
+        expense_breakdown = insights.get("expense_breakdown", {})
+        low_confidence_count = len(insights.get("low_confidence_transactions", []))
+        
+        # Basic suggestion for low confidence transactions
+        if low_confidence_count > 0:
+            suggestions.append({
+                "id": "review-transactions",
+                "title": "Review Transaction Categories",
+                "description": f"You have {low_confidence_count} transactions with low confidence categorization. Review these to improve your expense tracking accuracy.",
+                "category": "budget",
+                "impact": "medium"
+            })
+        
+        # Basic high spending category suggestion
+        if expense_breakdown:
+            top_category = max(expense_breakdown.items(), key=lambda x: x[1])
+            if top_category[1] > 0:
+                suggestions.append({
+                    "id": "top-spending",
+                    "title": f"Monitor {top_category[0]} Spending",
+                    "description": f"{top_category[0]} is your highest expense category at ₹{top_category[1]:,.2f}. Consider setting a monthly budget for this category.",
+                    "category": "budget",
+                    "impact": "medium",
+                    "estimatedSavings": round(top_category[1] * 0.1, 2)
+                })
+        
+        # Basic savings suggestion
+        total_income = summary.get("total_income", 0)
+        total_expenses = summary.get("total_expenses", 0)
+        if total_income > 0:
+            savings_rate = ((total_income - total_expenses) / total_income) * 100
+            if savings_rate < 20:
+                suggestions.append({
+                    "id": "improve-savings",
+                    "title": "Increase Your Savings Rate",
+                    "description": f"Your current savings rate is {savings_rate:.1f}%. Consider aiming for 20% by reducing discretionary spending.",
+                    "category": "savings",
+                    "impact": "high"
+                })
+        
+        return suggestions
+
 # Create the MCP server
 app = Server("financial-analyzer")
 

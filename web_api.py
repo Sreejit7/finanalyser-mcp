@@ -92,6 +92,9 @@ async def analyze_file(
         # Generate insights
         insights = current_analyzer.generate_insights(transactions)
         
+        # Generate LLM-based suggestions
+        suggestions = await current_analyzer.generate_suggestions_with_llm(transactions, insights)
+        
         # Format response for frontend
         response = {
             "transactions": [
@@ -106,6 +109,7 @@ async def analyze_file(
                 for t in transactions
             ],
             "insights": insights,
+            "suggestions": suggestions,
             "summary": {
                 "total_transactions": len(transactions),
                 "total_income": sum(t.amount for t in transactions if t.type == "income"),
@@ -180,6 +184,18 @@ async def analyze_file_stream(
                 data = {k: v for k, v in batch_result.items() if k != "event"}
                 
                 yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+            
+            # Generate final suggestions with LLM
+            print("🔮 Generating AI-powered suggestions...")
+            final_insights = current_analyzer.generate_insights(transactions)
+            suggestions = await current_analyzer.generate_suggestions_with_llm(transactions, final_insights)
+            
+            # Send suggestions event
+            suggestions_data = {
+                'suggestions': suggestions,
+                'suggestions_count': len(suggestions)
+            }
+            yield f"event: suggestions_generated\ndata: {json.dumps(suggestions_data)}\n\n"
             
             # Send completion event
             print(f"✅ Streaming analysis completed for {file.filename}")
