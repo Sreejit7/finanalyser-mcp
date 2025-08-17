@@ -32,7 +32,7 @@ export interface Suggestion {
   description: string;
   category: 'savings' | 'spending' | 'budget' | 'investment';
   impact: 'high' | 'medium' | 'low';
-  estimatedSavings?: number;
+  estimatedSavings?: number | string;
 }
 
 export interface Summary {
@@ -47,5 +47,6 @@ export interface Summary {
 export interface AnalysisResponse {
   transactions: Transaction[];
   insights: any;
+  suggestions: Suggestion[];
   summary: Summary;
 }
