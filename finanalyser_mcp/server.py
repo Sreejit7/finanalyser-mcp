@@ -41,16 +41,36 @@ class Transaction:
 class FinancialAnalyzer:
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, model: Optional[str] = None):
         self.openai_client = None
-        self.model = model or "openai/gpt-4o-mini"  # Default to OpenRouter's GPT-4o-mini
-        self.base_url = base_url or "https://openrouter.ai/api/v1"  # Default to OpenRouter
+        
+        # Load defaults from environment variables
+        default_model = os.getenv("DEFAULT_MODEL", "google/gemini-flash-1.5")
+        default_base_url = os.getenv("BASE_URL", "https://openrouter.ai/api/v1")
+        
+        self.model = model or default_model
+        self.base_url = base_url or default_base_url
+        
+        logger.info(f"FinancialAnalyzer initialization:")
+        logger.info(f"  - api_key provided: {'Yes' if api_key else 'No'}")
+        logger.info(f"  - base_url: {self.base_url} {'(from env)' if base_url is None and os.getenv('BASE_URL') else '(default)' if base_url is None else '(provided)'}")
+        logger.info(f"  - model: {self.model} {'(from env)' if model is None and os.getenv('DEFAULT_MODEL') else '(default)' if model is None else '(provided)'}")
+        logger.info(f"  - OPENROUTER_API_KEY env: {'Set' if os.getenv('OPENROUTER_API_KEY') else 'Not set'}")
+        logger.info(f"  - OPENAI_API_KEY env: {'Set' if os.getenv('OPENAI_API_KEY') else 'Not set'}")
+        logger.info(f"  - DEFAULT_MODEL env: {'Set' if os.getenv('DEFAULT_MODEL') else 'Not set'}")
+        logger.info(f"  - BASE_URL env: {'Set' if os.getenv('BASE_URL') else 'Not set'}")
 
         # Try to initialize client with provided parameters
         if api_key:
+            logger.info("Using provided API key")
+            # If API key provided, always use OpenRouter unless explicitly told otherwise
+            if not base_url:
+                logger.info("No base_url specified, using OpenRouter by default")
             self._initialize_client(api_key, self.base_url)
         elif os.getenv("OPENROUTER_API_KEY"):
+            logger.info("Using OPENROUTER_API_KEY from environment")
             self._initialize_client(os.getenv("OPENROUTER_API_KEY"), self.base_url)
-        elif os.getenv("OPENAI_API_KEY") and not base_url:
-            # Fallback to OpenAI if no custom base_url and OpenAI key exists
+        elif os.getenv("OPENAI_API_KEY"):
+            # Only fallback to OpenAI if no OpenRouter key available and no base_url specified
+            logger.info("No OpenRouter key found, falling back to OpenAI API")
             self._initialize_client(os.getenv("OPENAI_API_KEY"), "https://api.openai.com/v1")
             self.model = "gpt-4o-mini"
         else:
@@ -59,26 +79,37 @@ class FinancialAnalyzer:
     def _initialize_client(self, api_key: str, base_url: str):
         """Initialize the OpenAI client with custom base URL for OpenRouter compatibility."""
         try:
+            logger.info(f"Initializing OpenAI client with:")
+            logger.info(f"  - base_url: {base_url}")
+            logger.info(f"  - api_key: {api_key[:10]}...{api_key[-4:] if len(api_key) > 14 else api_key}")
+            
             self.openai_client = openai.OpenAI(
                 api_key=api_key,
                 base_url=base_url
             )
-            logger.info(f"Initialized client with base URL: {base_url}")
+            logger.info(f"✅ Successfully initialized client with base URL: {base_url}")
         except Exception as e:
-            logger.error(f"Failed to initialize client: {e}")
+            logger.error(f"❌ Failed to initialize client: {e}")
             self.openai_client = None
 
         # Predefined categories for fallback and validation
         self.expense_categories = [
-            'Food & Dining',
+            'Food Delivery & Takeout',
+            'Restaurants & Dining',
+            'Cafes & Coffee Shops', 
+            'Groceries & Supermarkets',
+            'Fast Food & Quick Service',
             'Transportation',
-            'Shopping',
-            'Entertainment',
-            'Healthcare',
-            'Utilities',
-            'Housing',
-            'Education',
-            'Personal Care',
+            'Travel & Accommodation',
+            'Shopping & Retail',
+            'Entertainment & Recreation',
+            'Healthcare & Medical',
+            'Utilities & Bills',
+            'Housing & Rent',
+            'Education & Learning',
+            'Personal Care & Beauty',
+            'Professional Services',
+            'Fitness & Wellness',
             'Banking & Fees',
             'Insurance',
             'Investments',
@@ -118,6 +149,146 @@ class FinancialAnalyzer:
 
         return categorized_transactions
 
+    async def categorize_transactions_streaming(self, transactions: List[Transaction]):
+        """Stream categorized transactions in batches for real-time UI updates."""
+        if not self.openai_client:
+            logger.warning("OpenAI client not available. Using fallback categorization.")
+            # Yield fallback results in batches for consistency
+            batch_size = 20
+            total_batches = len(transactions) // batch_size + (1 if len(transactions) % batch_size else 0)
+            
+            all_processed = []
+            for i in range(0, len(transactions), batch_size):
+                batch = transactions[i:i + batch_size]
+                categorized_batch = [self._fallback_categorize(tx) for tx in batch]
+                all_processed.extend(categorized_batch)
+                
+                # Generate insights for fallback mode
+                incremental_insights = self.generate_incremental_insights(all_processed)
+                
+                yield {
+                    "event": "batch_complete",
+                    "batch_number": i // batch_size + 1,
+                    "total_batches": total_batches,
+                    "progress_percentage": min(((i + batch_size) / len(transactions)) * 100, 100),
+                    "new_transactions": [asdict(tx) for tx in categorized_batch],
+                    "total_processed": len(all_processed),
+                    "insights": incremental_insights
+                }
+            return
+
+        # Process in batches with streaming
+        batch_size = 20
+        total_batches = len(transactions) // batch_size + (1 if len(transactions) % batch_size else 0)
+        all_categorized = []
+
+        for i in range(0, len(transactions), batch_size):
+            batch = transactions[i:i + batch_size]
+            batch_number = i // batch_size + 1
+            
+            try:
+                logger.info(f"🔄 Processing batch {batch_number}/{total_batches} ({len(batch)} transactions)")
+                categorized_batch = await self._categorize_batch(batch)
+                all_categorized.extend(categorized_batch)
+                
+                # Calculate progress
+                progress_percentage = min(((i + len(batch)) / len(transactions)) * 100, 100)
+                
+                # Generate incremental insights
+                incremental_insights = self.generate_incremental_insights(all_categorized)
+                
+                # Yield batch results immediately
+                yield {
+                    "event": "batch_complete",
+                    "batch_number": batch_number,
+                    "total_batches": total_batches,
+                    "progress_percentage": progress_percentage,
+                    "new_transactions": [asdict(tx) for tx in categorized_batch],
+                    "total_processed": len(all_categorized),
+                    "insights": incremental_insights
+                }
+                
+            except Exception as e:
+                logger.error(f"Error categorizing batch {batch_number}: {e}")
+                # Use fallback for failed batch but continue streaming
+                fallback_batch = [self._fallback_categorize(tx) for tx in batch]
+                all_categorized.extend(fallback_batch)
+                
+                progress_percentage = min(((i + len(batch)) / len(transactions)) * 100, 100)
+                
+                # Generate insights even for fallback
+                incremental_insights = self.generate_incremental_insights(all_categorized)
+                
+                yield {
+                    "event": "batch_complete",
+                    "batch_number": batch_number,
+                    "total_batches": total_batches,
+                    "progress_percentage": progress_percentage,
+                    "new_transactions": [asdict(tx) for tx in fallback_batch],
+                    "total_processed": len(all_categorized),
+                    "insights": incremental_insights,
+                    "error": f"Batch {batch_number} failed, used fallback categorization"
+                }
+
+    def generate_incremental_insights(self, transactions: List[Transaction]) -> Dict[str, Any]:
+        """Generate lightweight insights for streaming updates."""
+        if not transactions:
+            return {"summary": {"total_transactions": 0}}
+
+        # Calculate basic metrics
+        total_income = sum(tx.amount for tx in transactions if tx.type == "income")
+        total_expenses = abs(sum(tx.amount for tx in transactions if tx.type == "expense"))
+        net_cash_flow = total_income - total_expenses
+        
+        # Calculate confidence
+        confidences = [tx.confidence for tx in transactions if tx.confidence is not None]
+        avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+        
+        # Get date range
+        dates = [tx.date for tx in transactions if tx.date]
+        date_range = {
+            "from": min(dates) if dates else "",
+            "to": max(dates) if dates else ""
+        }
+        
+        # Category breakdowns
+        income_breakdown = {}
+        expense_breakdown = {}
+        
+        for tx in transactions:
+            if tx.type == "income":
+                income_breakdown[tx.category] = income_breakdown.get(tx.category, 0) + tx.amount
+            else:
+                expense_breakdown[tx.category] = expense_breakdown.get(tx.category, 0) + abs(tx.amount)
+        
+        # Top transactions (limit to avoid large payloads)
+        expenses_sorted = sorted([tx for tx in transactions if tx.type == "expense"], 
+                               key=lambda x: abs(x.amount), reverse=True)
+        income_sorted = sorted([tx for tx in transactions if tx.type == "income"], 
+                             key=lambda x: x.amount, reverse=True)
+        
+        return {
+            "summary": {
+                "total_transactions": len(transactions),
+                "total_income": total_income,
+                "total_expenses": total_expenses,
+                "net_cash_flow": net_cash_flow,
+                "date_range": date_range,
+                "categorization_confidence": avg_confidence
+            },
+            "income_breakdown": income_breakdown,
+            "expense_breakdown": expense_breakdown,
+            "top_expenses": [
+                {"description": tx.description, "amount": tx.amount, "category": tx.category}
+                for tx in expenses_sorted[:5]
+            ],
+            "top_income": [
+                {"description": tx.description, "amount": tx.amount, "category": tx.category}
+                for tx in income_sorted[:5]
+            ],
+            "low_confidence_count": len([tx for tx in transactions if tx.confidence < 0.6])
+        }
+
     async def _categorize_batch(self, transactions: List[Transaction]) -> List[Transaction]:
         """Categorize a batch of transactions using OpenAI API."""
 
@@ -135,7 +306,7 @@ class FinancialAnalyzer:
         income_categories_str = ", ".join(self.income_categories)
 
         prompt = f"""
-You are a financial transaction categorizer. Analyze the following transactions and categorize each one.
+You are a financial transaction categorizer. Analyze the following transactions and categorize each one using CONTEXT-AWARE analysis.
 
 For each transaction, determine:
 1. Type: "income" (positive cash flow) or "expense" (negative cash flow)
@@ -148,24 +319,65 @@ Income Categories: {income_categories_str}
 Transactions to categorize:
 {json.dumps(transaction_data, indent=2)}
 
-Rules:
-- If amount is positive, it's usually income
-- If amount is negative, it's usually an expense
-- Consider the description carefully for context
-- Use "Other" or "Other Income" for unclear cases
-- Be consistent with similar transactions
+CONTEXT-AWARE CATEGORIZATION RULES:
+
+1. ACTIVITY-BASED ANALYSIS (Primary Method):
+   - Look for activity keywords: "lunch", "dinner", "breakfast", "coffee", "meal", "snack"
+   - Business type indicators: "restaurant", "cafe", "hotel", "mall", "gym", "hospital"  
+   - Service indicators: "delivery", "order", "subscription", "bill", "fee", "membership"
+
+2. FOOD & DINING SUBCATEGORIES:
+   - "Food Delivery & Takeout": delivery, order, takeout, takeaway keywords
+   - "Restaurants & Dining": lunch, dinner, meal, restaurant, dining keywords
+   - "Cafes & Coffee Shops": coffee, cafe, tea, breakfast keywords
+   - "Groceries & Supermarkets": grocery, supermarket, market, vegetables, fruits
+   - "Fast Food & Quick Service": drive-thru, counter, quick service patterns
+
+3. AMOUNT PATTERN HINTS:
+   - ₹200-800: Likely meals, coffee, small purchases
+   - ₹1000-5000: Likely shopping, utilities, medium services
+   - ₹10000+: Likely rent, insurance, large purchases, hotels
+
+4. SMART INFERENCE:
+   - "Subway Lunch" → Restaurants & Dining (lunch keyword)
+   - "Swiggy Dinner Order" → Food Delivery & Takeout (dinner + order)
+   - "Taj Hotel Mumbai" → Travel & Accommodation (hotel keyword)
+   - "Third Wave Coffee" → Cafes & Coffee Shops (coffee keyword)
+   - "Gym Membership" → Fitness & Wellness (gym + membership)
+
+5. CONFIDENCE SCORING:
+   - High (0.9+): Clear activity + business type match
+   - Medium (0.7-0.8): Activity keyword OR business type clear
+   - Low (0.5-0.6): Amount-based classification only
+
+6. TYPE DETERMINATION PRIORITY:
+   - Priority Income Keywords (override other words): reimbursement, refund, return, cashback, deposit, dividend, interest, bonus, salary, wage
+   - Other Income: freelance, contract, consulting, business income, revenue, sales
+   - Expense patterns: purchase, payment, withdrawal, bill, fee, charge
+   - IMPORTANT: Priority keywords override conflicting words (e.g., "reimbursement" overrides "expense")
+   - Use amount sign as final fallback: positive = income, negative = expense
+
+7. FOCUS ON INTENT, NOT BRAND:
+   - Don't memorize brand names
+   - Focus on what the person DID (ate lunch, bought coffee, paid bill)
+   - Use context clues to understand transaction purpose
 
 Respond with a JSON array where each object has:
 {{"id": transaction_id, "type": "income/expense", "category": "category_name", "confidence": confidence_score}}
 
 Example response:
 [
-  {{"id": 0, "type": "expense", "category": "Food & Dining", "confidence": 0.95}},
+  {{"id": 0, "type": "expense", "category": "Restaurants & Dining", "confidence": 0.95}},
   {{"id": 1, "type": "income", "category": "Salary", "confidence": 0.90}}
 ]
 """
 
         try:
+            logger.info(f"🚀 Making LLM API call:")
+            logger.info(f"  - model: {self.model}")
+            logger.info(f"  - base_url: {self.openai_client.base_url if self.openai_client else 'None'}")
+            logger.info(f"  - batch size: {len(transactions)} transactions")
+            
             response = await asyncio.to_thread(
                 self.openai_client.chat.completions.create,
                 model=self.model,
@@ -176,6 +388,9 @@ Example response:
                 temperature=0.1,
                 max_tokens=2000
             )
+            
+            logger.info(f"✅ Received response from LLM API")
+            logger.info(f"  - tokens used: {response.usage.total_tokens if response.usage else 'unknown'}")
 
             # Parse the response
             categorizations = json.loads(response.choices[0].message.content)
@@ -214,17 +429,34 @@ Example response:
         description = transaction.description.lower()
         amount = transaction.amount
 
-        # Determine type based on amount
-        transaction.type = "income" if amount > 0 else "expense"
+        # Priority income keywords (these override expense keywords)
+        priority_income_keywords = ['reimbursement', 'refund', 'return', 'cashback', 'deposit', 'credit', 'dividend', 'interest', 'bonus', 'gift', 'salary', 'wage', 'income']
+        
+        # Check for priority income keywords first (these override everything)
+        if any(keyword in description for keyword in priority_income_keywords):
+            transaction.type = "income"
+        # Then check for other income patterns
+        elif any(keyword in description for keyword in ['payroll', 'paycheck', 'freelance', 'contract', 'consulting', 'business income', 'revenue', 'sales', 'tip']):
+            transaction.type = "income"
+        # Then check for expense keywords
+        elif any(keyword in description for keyword in ['purchase', 'payment', 'withdrawal', 'debit', 'bill', 'fee', 'charge', 'business dinner', 'business lunch']):
+            transaction.type = "expense"
+        # Special case: if contains "expense" but also "reimbursement", it's income
+        elif 'expense' in description and 'reimbursement' in description:
+            transaction.type = "income"
+        else:
+            # Fallback to amount-based logic
+            transaction.type = "income" if amount > 0 else "expense"
+        
 
         # Simple keyword-based categorization
         if transaction.type == "income":
             income_keywords = {
                 'Salary': ['salary', 'wage', 'payroll', 'paycheck'],
                 'Freelance': ['freelance', 'contract', 'consulting'],
-                'Business Income': ['business', 'revenue', 'sales'],
+                'Business Income': ['business income', 'revenue', 'sales'],
                 'Investment Returns': ['dividend', 'interest', 'capital gains'],
-                'Refunds': ['refund', 'return', 'cashback'],
+                'Refunds': ['refund', 'return', 'cashback', 'reimbursement'],
                 'Gifts': ['gift', 'bonus', 'tip']
             }
 
@@ -238,21 +470,64 @@ Example response:
             transaction.confidence = 0.3
         else:
             expense_keywords = {
-                'Food & Dining': ['restaurant', 'food', 'dining', 'cafe', 'pizza', 'mcdonalds', 'starbucks', 'grocery', 'supermarket'],
-                'Transportation': ['uber', 'lyft', 'taxi', 'gas', 'fuel', 'metro', 'bus', 'train', 'parking'],
-                'Shopping': ['amazon', 'walmart', 'target', 'store', 'shopping', 'retail'],
-                'Entertainment': ['movie', 'netflix', 'spotify', 'gaming', 'theater', 'concert'],
-                'Healthcare': ['hospital', 'doctor', 'pharmacy', 'medical', 'health', 'clinic'],
-                'Utilities': ['electric', 'water', 'internet', 'phone', 'cable', 'utility'],
-                'Housing': ['rent', 'mortgage', 'housing', 'apartment'],
-                'Banking & Fees': ['fee', 'charge', 'bank', 'atm']
+                'Food Delivery & Takeout': ['delivery', 'order', 'takeout', 'takeaway', 'swiggy', 'zomato', 'uber eats', 'delivered'],
+                'Restaurants & Dining': ['lunch', 'dinner', 'meal', 'restaurant', 'dining', 'dine', 'brunch'],
+                'Cafes & Coffee Shops': ['coffee', 'cafe', 'tea', 'breakfast', 'espresso', 'latte', 'cappuccino'],
+                'Groceries & Supermarkets': ['grocery', 'supermarket', 'vegetables', 'fruits', 'market', 'bazaar', 'vegetables', 'food hall'],
+                'Fast Food & Quick Service': ['drive', 'counter', 'quick', 'fast food', 'sandwich', 'burger', 'pizza', 'taco', 'bell', 'kfc', 'mcdonalds'],
+                'Transportation': ['taxi', 'uber', 'ola', 'bus', 'metro', 'train', 'fuel', 'petrol', 'gas', 'parking', 'ride'],
+                'Travel & Accommodation': ['hotel', 'flight', 'travel', 'booking', 'accommodation', 'resort', 'airline', 'airport'],
+                'Shopping & Retail': ['shopping', 'store', 'retail', 'mall', 'purchase', 'buy', 'clothes', 'electronics'],
+                'Entertainment & Recreation': ['movie', 'cinema', 'netflix', 'spotify', 'gaming', 'theater', 'concert', 'entertainment'],
+                'Healthcare & Medical': ['hospital', 'doctor', 'pharmacy', 'medical', 'health', 'clinic', 'medicine', 'treatment'],
+                'Utilities & Bills': ['electric', 'electricity', 'water', 'internet', 'phone', 'cable', 'utility', 'bill'],
+                'Housing & Rent': ['rent', 'mortgage', 'housing', 'apartment', 'house payment'],
+                'Professional Services': ['subscription', 'software', 'service', 'professional', 'office', 'adobe', 'microsoft'],
+                'Fitness & Wellness': ['gym', 'fitness', 'workout', 'yoga', 'health club', 'personal training', 'membership'],
+                'Personal Care & Beauty': ['salon', 'spa', 'beauty', 'haircut', 'cosmetics', 'personal care'],
+                'Education & Learning': ['course', 'education', 'learning', 'book', 'training', 'class'],
+                'Banking & Fees': ['fee', 'charge', 'bank', 'atm', 'transfer', 'withdrawal fee'],
+                'Insurance': ['insurance', 'premium', 'policy'],
+                'Investments': ['investment', 'mutual fund', 'sip', 'stock', 'dividend']
             }
 
+            # Enhanced confidence scoring based on keyword strength and context
+            best_match = None
+            best_confidence = 0.0
+            
             for category, keywords in expense_keywords.items():
-                if any(keyword in description for keyword in keywords):
-                    transaction.category = category
-                    transaction.confidence = 0.7
-                    return transaction
+                for keyword in keywords:
+                    if keyword in description:
+                        # Calculate confidence based on keyword strength and context
+                        confidence = 0.7  # Base confidence
+                        
+                        # Boost confidence for activity keywords
+                        activity_keywords = ['lunch', 'dinner', 'breakfast', 'coffee', 'meal', 'order', 'delivery']
+                        if keyword in activity_keywords:
+                            confidence = 0.85
+                        
+                        # Boost confidence for exact business type matches
+                        business_keywords = ['restaurant', 'cafe', 'hotel', 'gym', 'hospital', 'pharmacy']
+                        if keyword in business_keywords:
+                            confidence = 0.9
+                        
+                        # Boost confidence if multiple keywords match from same category
+                        matching_keywords = [kw for kw in keywords if kw in description]
+                        if len(matching_keywords) > 1:
+                            confidence = min(0.95, confidence + 0.1 * (len(matching_keywords) - 1))
+                        
+                        # Check for exact keyword match vs partial
+                        if keyword == description.lower().strip():
+                            confidence = min(0.95, confidence + 0.1)
+                        
+                        if confidence > best_confidence:
+                            best_match = category
+                            best_confidence = confidence
+            
+            if best_match:
+                transaction.category = best_match
+                transaction.confidence = best_confidence
+                return transaction
 
             transaction.category = "Other"
             transaction.confidence = 0.3
