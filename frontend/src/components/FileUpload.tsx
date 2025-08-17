@@ -55,6 +55,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
           onChange={handleFileInput}
           className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
           disabled={isLoading}
+          aria-label="Upload file"
         />
         
         <div className="space-y-6">

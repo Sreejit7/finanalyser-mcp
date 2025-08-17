@@ -19,7 +19,12 @@ app = FastAPI(title="Financial Analyzer API", version="1.0.0")
 # Enable CORS for frontend development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React dev server
+# Enable CORS for frontend development or production
+cors_origins = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000")
+allow_origins = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -123,7 +128,7 @@ async def analyze_file(
     
     finally:
         # Clean up temporary file
-        if os.path.exists(temp_file_path):
+        if temp_file_path is not None and os.path.exists(temp_file_path):
             os.unlink(temp_file_path)
 
 @app.post("/api/analyze/stream")
@@ -191,7 +196,7 @@ async def analyze_file_stream(
         
         finally:
             # Clean up temporary file
-            if os.path.exists(temp_file_path):
+            if temp_file_path is not None and os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
     
     return StreamingResponse(
